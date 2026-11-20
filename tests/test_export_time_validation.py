@@ -200,3 +200,70 @@ def test_export_time_window_accepts_plus_offset() -> None:
         "2026-10-01T05:30:00+05:30", "2026-10-25T05:30:00+05:30"
     )
     assert result == ("2026-10-01T05:30:00+05:30", "2026-10-25T05:30:00+05:30")
+
+
+# ---------------------------------------------------------------------------
+# Mixed-offset and same-instant ordering (the cases the lexicographic
+# comparison got wrong — fixed by comparing parsed datetimes)
+# ---------------------------------------------------------------------------
+
+
+def test_export_time_window_accepts_mixed_offset_valid_window() -> None:
+    # 10:00+05:30 == 04:30Z  <  05:00Z — genuinely earlier; must be accepted.
+    result = client_module._export_time_window(
+        "2026-10-01T10:00:00+05:30",
+        "2026-10-01T05:00:00+00:00",
+    )
+    # Original strings returned unchanged for use as query parameters.
+    assert result == ("2026-10-01T10:00:00+05:30", "2026-10-01T05:00:00+00:00")
+
+
+def test_export_time_window_rejects_mixed_offset_reversed_window() -> None:
+    # 10:00+00:00 > 05:00+05:30 == 23:30Z previous day — from is after to.
+    with pytest.raises(ValueError, match="from_time must not be after to_time"):
+        client_module._export_time_window(
+            "2026-10-01T10:00:00+00:00",
+            "2026-10-01T05:00:00+05:30",
+        )
+
+
+def test_export_time_window_accepts_same_instant_different_spelling() -> None:
+    # Both represent the same UTC instant; from == to is allowed.
+    # Lexicographically "+05:30" > "+00:00" so the old string comparison
+    # would have raised ValueError — datetime comparison handles this correctly.
+    result = client_module._export_time_window(
+        "2026-10-01T05:30:00+05:30",  # == 00:00Z
+        "2026-10-01T00:00:00+00:00",  # == 00:00Z
+    )
+    assert result == ("2026-10-01T05:30:00+05:30", "2026-10-01T00:00:00+00:00")
+
+
+def test_export_time_window_accepts_same_instant_with_fractional_seconds() -> None:
+    # Fractional seconds that land on the same instant as a whole-second form.
+    result = client_module._export_time_window(
+        "2026-10-01T00:00:00.000000+00:00",
+        "2026-10-01T00:00:00+00:00",
+    )
+    assert result == ("2026-10-01T00:00:00.000000+00:00", "2026-10-01T00:00:00+00:00")
+
+
+def test_export_time_window_rejects_same_instant_mixed_offset_reversed() -> None:
+    # from is lexicographically *before* to (Z < +05:30 in ASCII), but
+    # semantically from == to, so it must still be accepted (not rejected).
+    # This is the edge case where lex order and time order agree on equality;
+    # confirm we don't accidentally raise.
+    result = client_module._export_time_window(
+        "2026-10-01T00:00:00Z",  # 00:00 UTC
+        "2026-10-01T05:30:00+05:30",  # also 00:00 UTC
+    )
+    assert result == ("2026-10-01T00:00:00Z", "2026-10-01T05:30:00+05:30")
+
+
+def test_export_time_window_original_strings_preserved_mixed_offset() -> None:
+    # Confirm the helper never normalises the strings it returns — both are
+    # forwarded to the server exactly as the caller wrote them.
+    from_raw = "2026-10-01T10:00:00+05:30"
+    to_raw = "2026-10-25T12:00:00-04:00"
+    from_ret, to_ret = client_module._export_time_window(from_raw, to_raw)
+    assert from_ret is from_raw
+    assert to_ret is to_raw

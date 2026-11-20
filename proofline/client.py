@@ -211,8 +211,13 @@ def _export_next_cursor(page: ExportPage, seen: set[str]) -> str | None:
 _EXPORT_TIME_HINT = "e.g. '2026-01-01T00:00:00Z'"
 
 
-def _export_time(value: object, name: str) -> str:
-    """Return *value* unchanged after asserting it is a timezone-aware ISO 8601 string."""
+def _export_time(value: object, name: str) -> tuple[str, datetime]:
+    """Parse and return *(original_string, parsed_datetime)* for a timezone-aware ISO 8601 value.
+
+    Raises ValueError when *value* is not a string, cannot be parsed as ISO 8601,
+    or has no UTC offset (naive datetime).  The original string is returned
+    unchanged so callers can forward it to the server without normalisation.
+    """
     if not isinstance(value, str):
         raise ValueError(
             f"{name} must be a timezone-aware ISO 8601 datetime string, {_EXPORT_TIME_HINT}."
@@ -227,21 +232,22 @@ def _export_time(value: object, name: str) -> str:
         raise ValueError(
             f"{name} must be a timezone-aware ISO 8601 datetime string, {_EXPORT_TIME_HINT}."
         )
-    return value
+    return value, parsed
 
 
 def _export_time_window(from_time: object, to_time: object) -> tuple[str, str]:
-    """Validate and return both export time-window boundaries.
+    """Validate and return both export time-window boundaries as original strings.
 
     Raises ValueError when either boundary is not a timezone-aware ISO 8601
-    string, or when *from_time* is lexicographically after *to_time*.  ISO 8601
-    strings with the same UTC offset are lexicographically ordered, so the
-    comparison is correct for the common case of same-offset windows and acts as
-    an early guard for obviously reversed windows in the mixed-offset case.
+    string, or when *from_time* is after *to_time*.  Comparison is performed on
+    the parsed, timezone-aware datetimes so mixed-offset windows (e.g.
+    '10:00+05:30' vs '05:00+00:00', which are the same instant) are ordered
+    correctly regardless of how the offset is written.  The original strings are
+    returned unchanged for use as query parameters.
     """
-    from_str = _export_time(from_time, "from_time")
-    to_str = _export_time(to_time, "to_time")
-    if from_str > to_str:
+    from_str, from_dt = _export_time(from_time, "from_time")
+    to_str, to_dt = _export_time(to_time, "to_time")
+    if from_dt > to_dt:
         raise ValueError("from_time must not be after to_time.")
     return from_str, to_str
 
