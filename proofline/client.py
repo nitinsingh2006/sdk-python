@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from asyncio import sleep as async_sleep
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from datetime import datetime
 from string import hexdigits
 from time import monotonic, sleep
 from types import TracebackType
@@ -207,6 +208,50 @@ def _export_next_cursor(page: ExportPage, seen: set[str]) -> str | None:
     return cursor
 
 
+_EXPORT_TIME_HINT = "e.g. '2026-01-01T00:00:00Z'"
+
+
+def _export_time(value: object, name: str) -> tuple[str, datetime]:
+    """Parse and return *(original_string, parsed_datetime)* for a timezone-aware ISO 8601 value.
+
+    Raises ValueError when *value* is not a string, cannot be parsed as ISO 8601,
+    or has no UTC offset (naive datetime).  The original string is returned
+    unchanged so callers can forward it to the server without normalisation.
+    """
+    if not isinstance(value, str):
+        raise ValueError(
+            f"{name} must be a timezone-aware ISO 8601 datetime string, {_EXPORT_TIME_HINT}."
+        )
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError(
+            f"{name} must be a timezone-aware ISO 8601 datetime string, {_EXPORT_TIME_HINT}."
+        ) from None
+    if parsed.tzinfo is None:
+        raise ValueError(
+            f"{name} must be a timezone-aware ISO 8601 datetime string, {_EXPORT_TIME_HINT}."
+        )
+    return value, parsed
+
+
+def _export_time_window(from_time: object, to_time: object) -> tuple[str, str]:
+    """Validate and return both export time-window boundaries as original strings.
+
+    Raises ValueError when either boundary is not a timezone-aware ISO 8601
+    string, or when *from_time* is after *to_time*.  Comparison is performed on
+    the parsed, timezone-aware datetimes so mixed-offset windows (e.g.
+    '10:00+05:30' vs '05:00+00:00', which are the same instant) are ordered
+    correctly regardless of how the offset is written.  The original strings are
+    returned unchanged for use as query parameters.
+    """
+    from_str, from_dt = _export_time(from_time, "from_time")
+    to_str, to_dt = _export_time(to_time, "to_time")
+    if from_dt > to_dt:
+        raise ValueError("from_time must not be after to_time.")
+    return from_str, to_str
+
+
 class ProoflineClient(Operations):
     """Synchronous typed HTTP operations.
 
@@ -289,6 +334,7 @@ class ProoflineClient(Operations):
             raise ValueError("Unknown export dataset.")
         if format not in ("csv", "ndjson"):
             raise ValueError("Export format must be csv or ndjson.")
+        from_time, to_time = _export_time_window(from_time, to_time)
         params = {"from": from_time, "to": to_time, "format": format}
         if cursor is not None:
             params["cursor"] = cursor
@@ -318,6 +364,7 @@ class ProoflineClient(Operations):
     ) -> Iterator[ExportPage]:
         """Stream export pages, refusing cursor cycles and incomplete bounded traversals."""
         _export_page_limit(max_pages)
+        from_time, to_time = _export_time_window(from_time, to_time)
         seen = {cursor} if cursor is not None else set()
         for _ in range(max_pages):
             page = self.export_reviews(
@@ -659,6 +706,7 @@ class AsyncProoflineClient(AsyncOperations):
             raise ValueError("Unknown export dataset.")
         if format not in ("csv", "ndjson"):
             raise ValueError("Export format must be csv or ndjson.")
+        from_time, to_time = _export_time_window(from_time, to_time)
         params = {"from": from_time, "to": to_time, "format": format}
         if cursor is not None:
             params["cursor"] = cursor
@@ -688,6 +736,7 @@ class AsyncProoflineClient(AsyncOperations):
     ) -> AsyncIterator[ExportPage]:
         """Stream export pages, refusing cursor cycles and incomplete bounded traversals."""
         _export_page_limit(max_pages)
+        from_time, to_time = _export_time_window(from_time, to_time)
         seen = {cursor} if cursor is not None else set()
         for _ in range(max_pages):
             page = await self.export_reviews(
