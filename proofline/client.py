@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from asyncio import sleep as async_sleep
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from datetime import datetime
 from string import hexdigits
 from time import monotonic, sleep
 from types import TracebackType
@@ -207,6 +208,44 @@ def _export_next_cursor(page: ExportPage, seen: set[str]) -> str | None:
     return cursor
 
 
+_EXPORT_TIME_HINT = "e.g. '2026-01-01T00:00:00Z'"
+
+
+def _export_time(value: object, name: str) -> str:
+    """Return *value* unchanged after asserting it is a timezone-aware ISO 8601 string."""
+    if not isinstance(value, str):
+        raise ValueError(
+            f"{name} must be a timezone-aware ISO 8601 datetime string, {_EXPORT_TIME_HINT}."
+        )
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError(
+            f"{name} must be a timezone-aware ISO 8601 datetime string, {_EXPORT_TIME_HINT}."
+        ) from None
+    if parsed.tzinfo is None:
+        raise ValueError(
+            f"{name} must be a timezone-aware ISO 8601 datetime string, {_EXPORT_TIME_HINT}."
+        )
+    return value
+
+
+def _export_time_window(from_time: object, to_time: object) -> tuple[str, str]:
+    """Validate and return both export time-window boundaries.
+
+    Raises ValueError when either boundary is not a timezone-aware ISO 8601
+    string, or when *from_time* is lexicographically after *to_time*.  ISO 8601
+    strings with the same UTC offset are lexicographically ordered, so the
+    comparison is correct for the common case of same-offset windows and acts as
+    an early guard for obviously reversed windows in the mixed-offset case.
+    """
+    from_str = _export_time(from_time, "from_time")
+    to_str = _export_time(to_time, "to_time")
+    if from_str > to_str:
+        raise ValueError("from_time must not be after to_time.")
+    return from_str, to_str
+
+
 class ProoflineClient(Operations):
     """Synchronous typed HTTP operations.
 
@@ -289,6 +328,7 @@ class ProoflineClient(Operations):
             raise ValueError("Unknown export dataset.")
         if format not in ("csv", "ndjson"):
             raise ValueError("Export format must be csv or ndjson.")
+        from_time, to_time = _export_time_window(from_time, to_time)
         params = {"from": from_time, "to": to_time, "format": format}
         if cursor is not None:
             params["cursor"] = cursor
@@ -318,6 +358,7 @@ class ProoflineClient(Operations):
     ) -> Iterator[ExportPage]:
         """Stream export pages, refusing cursor cycles and incomplete bounded traversals."""
         _export_page_limit(max_pages)
+        from_time, to_time = _export_time_window(from_time, to_time)
         seen = {cursor} if cursor is not None else set()
         for _ in range(max_pages):
             page = self.export_reviews(
@@ -659,6 +700,7 @@ class AsyncProoflineClient(AsyncOperations):
             raise ValueError("Unknown export dataset.")
         if format not in ("csv", "ndjson"):
             raise ValueError("Export format must be csv or ndjson.")
+        from_time, to_time = _export_time_window(from_time, to_time)
         params = {"from": from_time, "to": to_time, "format": format}
         if cursor is not None:
             params["cursor"] = cursor
@@ -688,6 +730,7 @@ class AsyncProoflineClient(AsyncOperations):
     ) -> AsyncIterator[ExportPage]:
         """Stream export pages, refusing cursor cycles and incomplete bounded traversals."""
         _export_page_limit(max_pages)
+        from_time, to_time = _export_time_window(from_time, to_time)
         seen = {cursor} if cursor is not None else set()
         for _ in range(max_pages):
             page = await self.export_reviews(
